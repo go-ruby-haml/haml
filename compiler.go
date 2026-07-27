@@ -11,8 +11,27 @@ import (
 type compiler struct {
 	bufVar   string
 	escapeFn string
+	format   string // "html5" (default), "xhtml" or "html4"
 	src      strings.Builder
 	pending  strings.Builder // coalesced static literal text awaiting flush
+}
+
+// xhtml reports whether the compiler targets the XHTML format, which self-closes
+// void tags ("<br />") and expands boolean attributes ("checked=\"checked\"").
+func (c *compiler) xhtml() bool { return c.format == "xhtml" }
+
+// rstripOutput removes trailing whitespace from the output emitted so far,
+// implementing Haml's whitespace-removal markers. When a coalesced static run is
+// pending, its tail is trimmed in place; otherwise the last emitted output was
+// dynamic, so a runtime String#rstrip! is emitted to trim the buffer tail.
+func (c *compiler) rstripOutput() {
+	if c.pending.Len() > 0 {
+		s := strings.TrimRight(c.pending.String(), " \t\r\n\f\v")
+		c.pending.Reset()
+		c.pending.WriteString(s)
+		return
+	}
+	c.src.WriteString(c.bufVar + ".rstrip!\n")
 }
 
 // compileTree emits the full Ruby program for the parsed roots.
@@ -85,18 +104,80 @@ func (c *compiler) emit(n *node) {
 	case kindFilter:
 		c.emitFilter(n)
 	case kindDoctype:
-		c.pushStatic("<!DOCTYPE html>\n")
+		c.emitDoctype(n)
 	}
 }
 
-// emitText emits a plain-text node: literal text, honouring "#{}" interpolation
-// by emitting an interpolated (unescaped) Ruby string when present.
-func (c *compiler) emitText(n *node) {
-	if strings.Contains(n.text, "#{") {
-		c.emitRuby(c.bufVar + " << " + rubyInterp(n.text) + "; " + c.bufVar + ` << "\n"`)
+// emitDoctype resolves a "!!!" line to the exact doctype string for the
+// configured format. A doctype that resolves to the empty string (e.g. "!!! XML"
+// outside xhtml) emits nothing at all, not even a newline, matching the gem. An
+// invalid doctype name is silently ignored (the gem raises at compile time, but
+// well-formed templates never reach here — parse validates the "!!!" prefix).
+func (c *compiler) emitDoctype(n *node) {
+	s, err := resolveDoctype(n.raw, c.format)
+	if err != nil || s == "" {
 		return
 	}
-	c.pushStatic(n.text + "\n")
+	c.pushStatic(s + "\n")
+}
+
+// emitText emits a plain-text node, honouring "#{}" interpolation. Literal runs
+// coalesce into the static buffer; each interpolated expression is HTML-escaped
+// by default (the gem's behaviour), or left raw for a "!"-marked node.
+func (c *compiler) emitText(n *node) {
+	c.emitInterpText(n.text, !n.noEscape)
+	c.pushStatic("\n")
+}
+
+// emitInterpText appends literal text with "#{}" interpolation. Each literal run
+// is emitted as coalesced static output; each interpolation is emitted as a Ruby
+// append, HTML-escaped when escape is true. This matches how the gem escapes only
+// the interpolated values, never the surrounding literal bytes.
+func (c *compiler) emitInterpText(text string, escape bool) {
+	i := 0
+	for i < len(text) {
+		if text[i] == '#' && i+1 < len(text) && text[i+1] == '{' {
+			expr, next := scanInterp(text, i)
+			c.emitInterpExpr(expr, escape)
+			i = next
+			continue
+		}
+		start := i
+		for i < len(text) && !(text[i] == '#' && i+1 < len(text) && text[i+1] == '{') {
+			i++
+		}
+		c.pushStatic(text[start:i])
+	}
+}
+
+// emitInterpExpr emits a single interpolated expression append, escaped or raw.
+func (c *compiler) emitInterpExpr(expr string, escape bool) {
+	if escape {
+		c.emitRuby(c.bufVar + " << " + c.escapeFn + "((" + expr + ").to_s)")
+		return
+	}
+	c.emitRuby(c.bufVar + " << (" + expr + ").to_s")
+}
+
+// scanInterp returns the Ruby expression inside the "#{ ... }" beginning at
+// text[i] (with balanced braces) and the index just past the closing brace. An
+// unterminated interpolation yields the remaining text.
+func scanInterp(text string, i int) (expr string, next int) {
+	depth := 0
+	j := i
+	for j < len(text) {
+		switch text[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[i+2 : j], j + 1
+			}
+		}
+		j++
+	}
+	return text[i+2:], len(text)
 }
 
 // emitExpr emits an "=" / "!=" expression. standalone marks a block-level line
@@ -150,12 +231,24 @@ func (c *compiler) emitComment(n *node) {
 	}
 }
 
-// emitElement emits an element node and its subtree.
+// emitElement emits an element node and its subtree, applying the ">" (remove
+// outer whitespace) and "<" (remove inner whitespace) markers exactly as the gem
+// does: ">" strips the whitespace preceding the tag and suppresses the newline
+// after its close; "<" suppresses the newline after the open tag and strips the
+// whitespace before the close.
 func (c *compiler) emitElement(n *node) {
+	if n.nuke.outer {
+		c.rstripOutput()
+	}
 	open, closeTag, void := c.renderTag(n)
 	c.pushStatic(open)
+
+	outerNL := "\n"
+	if n.nuke.outer {
+		outerNL = ""
+	}
 	if void {
-		c.pushStatic("\n")
+		c.pushStatic(outerNL)
 		return
 	}
 
@@ -164,23 +257,24 @@ func (c *compiler) emitElement(n *node) {
 
 	switch {
 	case hasInline && n.text == "\x00expr":
-		// Inline expression content: <tag>EXPR</tag>\n on one line.
+		// Inline expression content: <tag>EXPR</tag> on one line.
 		c.emitExpr(n.codeExpr, n.textKind, false)
-		c.pushStatic(closeTag + "\n")
+		c.pushStatic(closeTag + outerNL)
 	case hasInline:
 		// Inline literal/interpolated text.
-		if strings.Contains(n.text, "#{") {
-			c.emitRuby(c.bufVar + " << " + rubyInterp(n.text))
-			c.pushStatic(closeTag + "\n")
-		} else {
-			c.pushStatic(n.text + closeTag + "\n")
-		}
+		c.emitInterpText(n.text, !n.noEscape)
+		c.pushStatic(closeTag + outerNL)
 	case hasChildren:
-		c.pushStatic("\n")
+		if !n.nuke.inner {
+			c.pushStatic("\n")
+		}
 		c.emitNodes(n.children)
-		c.pushStatic(closeTag + "\n")
+		if n.nuke.inner {
+			c.rstripOutput()
+		}
+		c.pushStatic(closeTag + outerNL)
 	default:
-		c.pushStatic(closeTag + "\n")
+		c.pushStatic(closeTag + outerNL)
 	}
 }
 
@@ -193,35 +287,94 @@ func (c *compiler) emitElement(n *node) {
 func (c *compiler) renderTag(n *node) (open, closeTag string, void bool) {
 	void = isVoidTag(n.tag) || n.selfClose
 	closeTag = "</" + n.tag + ">"
-
-	if n.dynAttrRB == "" {
-		return "<" + n.tag + c.renderStaticAttrs(n) + ">", closeTag, void
+	closeAngle := ">"
+	if void && c.xhtml() {
+		closeAngle = " />"
 	}
-	// Dynamic attributes: the whole attribute set (including any static shorthand
-	// class/id, which renderDynAttrCall folds into the hash) is rendered at eval
-	// time. Emit "<tag", then a Ruby call that renders the merged hash, then ">".
+
+	if n.dynAttrRB == "" && n.objectRef == "" {
+		return "<" + n.tag + c.renderStaticAttrs(n) + closeAngle, closeTag, void
+	}
+	// Dynamic attributes and/or an object reference: the whole attribute set
+	// (including any static shorthand class/id) is rendered at eval time. Emit
+	// "<tag", then a Ruby call that renders the merged hashes, then the close.
 	c.pushStatic("<" + n.tag)
 	c.emitRuby(c.bufVar + " << " + c.renderDynAttrCall(n))
-	return ">", closeTag, void
+	return closeAngle, closeTag, void
 }
 
 // renderDynAttrCall builds the Ruby expression that renders the element's
-// dynamic attribute hash at eval time via the runtime helper the host provides
-// (Haml.render_attributes). Static shorthand classes/ids are merged in.
+// dynamic attributes at eval time via the runtime helper the host provides
+// (::Haml::HamlAttributes.render). Static shorthand classes/ids are folded into
+// the first hash, an explicit attribute hash follows, and an object reference is
+// appended as a final Haml::ObjectRef.parse hash. The helper accumulates
+// class/id across every hash in order, matching the gem's attribute merging. The
+// format is passed so boolean/void rendering matches the selected format.
 func (c *compiler) renderDynAttrCall(n *node) string {
-	var pre []string
+	var hashes []string
+
+	// The static attributes (shorthand .class/#id always; literal hash attributes
+	// only when no raw dynamic hash already carries them) form a leading hash. A
+	// non-empty dynamic hash and an object reference follow as separate hashes so
+	// the runtime helper accumulates class/id across them instead of a Ruby hash
+	// literal colliding on a duplicate key.
+	var classes, ids []string
+	type kv struct{ name, val string }
+	var others []kv
+	includeLiteral := n.dynAttrRB == ""
 	for _, sa := range n.staticAttr {
-		if sa.classShorthand {
-			pre = append(pre, "class: "+rubyStrLit(sa.value))
-		} else if sa.idShorthand {
-			pre = append(pre, "id: "+rubyStrLit(sa.value))
+		switch {
+		case sa.classShorthand:
+			classes = append(classes, sa.value)
+		case sa.idShorthand:
+			ids = append(ids, sa.value)
+		case includeLiteral:
+			switch sa.name {
+			case "class":
+				classes = append(classes, strings.Fields(sa.value)...)
+			case "id":
+				ids = append(ids, sa.value)
+			default:
+				others = append(others, kv{sa.name, staticAttrRubyValue(sa)})
+			}
 		}
 	}
-	hash := n.dynAttrRB
-	if len(pre) > 0 {
-		hash = strings.Join(pre, ", ") + ", " + hash
+	var entries []string
+	if len(classes) > 0 {
+		entries = append(entries, "class: "+rubyStrLit(strings.Join(classes, " ")))
 	}
-	return "::Haml::HamlAttributes.render({" + hash + "})"
+	if len(ids) > 0 {
+		entries = append(entries, "id: "+rubyStrLit(strings.Join(ids, "_")))
+	}
+	for _, o := range others {
+		entries = append(entries, rubyStrLit(o.name)+" => "+o.val)
+	}
+	if len(entries) > 0 {
+		hashes = append(hashes, "{"+strings.Join(entries, ", ")+"}")
+	}
+	if n.dynAttrRB != "" {
+		hashes = append(hashes, "{"+n.dynAttrRB+"}")
+	}
+	if n.objectRef != "" {
+		hashes = append(hashes, "::Haml::ObjectRef.parse(["+n.objectRef+"])")
+	}
+	return "::Haml::HamlAttributes.render(" + rubyStrLit(c.format) + ", " + strings.Join(hashes, ", ") + ")"
+}
+
+// staticAttrRubyValue renders a resolved static attribute as the Ruby literal to
+// splice into a dynamic attribute hash: booleans as true/false, an explicit nil,
+// and everything else as a quoted string.
+func staticAttrRubyValue(sa staticAttr) string {
+	if sa.isBool {
+		if sa.value == "\x00nil" {
+			return "nil"
+		}
+		if sa.boolVal {
+			return "true"
+		}
+		return "false"
+	}
+	return rubyStrLit(sa.value)
 }
 
 // renderStaticAttrs resolves the element's static attributes into an attribute
@@ -304,7 +457,13 @@ func (c *compiler) renderStaticAttrs(n *node) string {
 	var b strings.Builder
 	for _, o := range out {
 		if o.boolean {
-			b.WriteString(" " + o.name)
+			// html5/html4 render a bare boolean attribute; xhtml expands it to
+			// name="name".
+			if c.xhtml() {
+				b.WriteString(" " + o.name + `="` + o.name + `"`)
+			} else {
+				b.WriteString(" " + o.name)
+			}
 		} else {
 			b.WriteString(" " + o.name + `="` + attrEscape(o.val) + `"`)
 		}
@@ -331,7 +490,9 @@ func (c *compiler) emitFilter(n *node) {
 	case "escaped":
 		c.pushStatic(HTMLEscape(interpolateStatic(body)) + "\n")
 	case "preserve":
-		c.pushStatic(strings.ReplaceAll(body, "\n", "&#x000A;") + "\n")
+		// Every newline in the block — including the final one — is preserved as
+		// the &#x000A; entity, matching the gem.
+		c.pushStatic(strings.ReplaceAll(body+"\n", "\n", "&#x000A;") + "\n")
 	case "javascript":
 		c.pushStatic("<script>\n" + indentBody(body) + "\n</script>\n")
 	case "css":

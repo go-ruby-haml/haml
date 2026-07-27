@@ -29,6 +29,13 @@ type Options struct {
 	// "::Haml::Util.escape_html", the helper the gem uses and that the host
 	// (rbgo) provides at eval time.
 	EscapeFn string
+
+	// Format selects the output format, mirroring the gem's :format option: it
+	// governs the doctype table, void/self-closing tag rendering (html5 "<br>"
+	// vs xhtml "<br />") and boolean-attribute rendering (html5 bare "checked"
+	// vs xhtml `checked="checked"`). Valid values are "html5" (the default when
+	// empty, matching the gem), "xhtml" and "html4".
+	Format string
 }
 
 // Compile compiles a Haml template into the Ruby source that, when eval'd with
@@ -49,11 +56,18 @@ func Compile(template string, opts Options) (src string, err error) {
 	if escapeFn == "" {
 		escapeFn = "::Haml::Util.escape_html"
 	}
+	format := opts.Format
+	if format == "" {
+		format = "html5"
+	}
+	if format != "html5" && format != "xhtml" && format != "html4" {
+		return "", &SyntaxError{Line: format, Msg: "invalid format"}
+	}
 	roots, err := parse(template)
 	if err != nil {
 		return "", err
 	}
-	c := &compiler{bufVar: bufVar, escapeFn: escapeFn}
+	c := &compiler{bufVar: bufVar, escapeFn: escapeFn, format: format}
 	c.src.WriteString(bufVar + " = ::String.new\n")
 	c.compileTree(roots)
 	c.src.WriteString(bufVar + "\n")

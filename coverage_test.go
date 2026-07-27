@@ -58,22 +58,6 @@ func TestRubyDumpEscapes(t *testing.T) {
 	}
 }
 
-// TestRubyInterpEscapes covers rubyInterp: preserved interpolation with escaped
-// surrounding literal quotes/backslashes.
-func TestRubyInterpEscapes(t *testing.T) {
-	if got := rubyInterp(`a"b\c#{x}d`); got != `"a\"b\\c#{x}d"` {
-		t.Errorf("rubyInterp = %q", got)
-	}
-	// Nested braces inside interpolation are copied verbatim.
-	if got := rubyInterp(`#{h[:k]}x`); got != `"#{h[:k]}x"` {
-		t.Errorf("rubyInterp nested = %q", got)
-	}
-	// Unterminated interpolation copies to end without panicking.
-	if got := rubyInterp(`a#{b`); got != `"a#{b"` {
-		t.Errorf("rubyInterp unterminated = %q", got)
-	}
-}
-
 // TestUnescapeRubyStr covers the escape resolution branches.
 func TestUnescapeRubyStr(t *testing.T) {
 	cases := map[string]string{
@@ -102,10 +86,10 @@ func TestSplitKeyValueForms(t *testing.T) {
 	compileGolden(t, "%p{a: 'x,y', b: 'z'}", head+`_hamlout << "<p a=\"x,y\" b=\"z\"></p>\n"`+"\n"+tail)
 	// Empty hashrocket key falls back to dynamic.
 	compileGolden(t, "%p{'' => v}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({'' => v})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {'' => v})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 	// Un-parseable entry (no ": " and no "=>") falls back to dynamic.
 	compileGolden(t, "%p{foo}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({foo})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {foo})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 }
 
 // TestParseFilterTrailingBlank exercises parseFilter's speculative blank-line
@@ -114,7 +98,7 @@ func TestParseFilterTrailingBlank(t *testing.T) {
 	compileGolden(t, ":plain\n  a\n\n", head+`_hamlout << "a\n"`+"\n"+tail)
 	// data hash whose value is itself dynamic keeps the whole thing dynamic.
 	compileGolden(t, "%p{data: {x: 'a', y: v}}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({data: {x: 'a', y: v}})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {data: {x: 'a', y: v}})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 }
 
 // TestOpensBlockAndContinuation covers block-opener and continuation detection
@@ -150,7 +134,7 @@ func TestOpensBlockAndContinuation(t *testing.T) {
 // node (not inline element content).
 func TestEmitTextInterpolationStandalone(t *testing.T) {
 	compileGolden(t, "root #{v} text",
-		head+`_hamlout << "root #{v} text"; _hamlout << "\n"`+"\n"+tail)
+		head+`_hamlout << "root "`+"\n"+`_hamlout << ::Haml::Util.escape_html((v).to_s)`+"\n"+`_hamlout << " text\n"`+"\n"+tail)
 	// Blank standalone text node between elements (empty line handling).
 	compileGolden(t, "%p a\n\n%p b",
 		head+`_hamlout << "<p>a</p>\n<p>b</p>\n"`+"\n"+tail)

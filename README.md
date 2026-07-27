@@ -38,22 +38,30 @@ Validated against the `haml` gem (7.x, Ruby ≥ 4.0) on every supported platform
 - **Elements & shorthand** — `%tag`, `.class`/`#id` (div default),
   `%tag.c1.c2#id`, class-merge (space) and id-merge (`_`) between shorthand and
   attribute hashes.
-- **Attributes** — Ruby-hash `%a{href: "x"}` and HTML-style `%a(href="x")`;
-  symbol keys, hashrocket keys, `data:` nested-hash expansion to `data-*`,
-  numeric/string/`true`/`false`/`nil` literals, boolean attributes (bare when
-  truthy, omitted when falsy), alphabetical ordering, escaped values. Non-literal
-  values are handled at eval time via `::Haml::HamlAttributes.render`.
-- **Content** — inline text, `=` (HTML-escaped Ruby), `!=`/`&=` (unescaped),
-  `~` (preserve), `-` (control, no output), `#{}` interpolation, `\` escape,
-  `|` multiline continuation.
+- **Attributes** — Ruby-hash `%a{href: "x"}`, HTML-style `%a(href="x")` and
+  object references `%tr[@user]` / `%tr[@user, :prefix]`; symbol keys, hashrocket
+  keys, `data:` nested-hash expansion to `data-*`, numeric/string/`true`/`false`/
+  `nil` literals, boolean attributes, alphabetical ordering, escaped values.
+  Non-literal values, dynamic class/id merging and object references are resolved
+  at eval time via `::Haml::HamlAttributes.render` / `::Haml::ObjectRef.parse`.
+- **Content** — inline text, `=` (HTML-escaped Ruby), `!=`/`&=` (unescaped/
+  force-escaped), `~` (preserve), `-` (control, no output), `#{}` interpolation
+  (**HTML-escaped by default**, like the gem), the `&`/`!` plain-text
+  escape/unescape markers, `\` escape, `|` multiline continuation.
+- **Whitespace control** — the `>` (remove outer) and `<` (remove inner)
+  whitespace-removal markers, byte-for-byte with the gem.
 - **Control flow** — `- if/elsif/else`, `- case/when`, `- begin/rescue/ensure`
   and `- … do |x|` blocks nest correctly and share a single emitted `end`.
 - **Filters** — `:plain`, `:javascript`, `:css`, `:escaped`, `:preserve`,
   `:ruby`.
 - **Comments & doctype** — HTML comments `/`, silent comments `-#`, conditional
-  comments `/[if IE]`, `!!!` doctype.
-- **Void / self-closing** — the HTML5 void set (`br`, `img`, `input`, …) and the
-  explicit `%tag/` marker render as `<tag>` with no content.
+  comments `/[if IE]`, and the **full doctype table** (`!!!`, `!!! 5`,
+  `!!! 1.1`, `!!! Strict`, `!!! Frameset`, `!!! Mobile`, `!!! Basic`, `!!! RDFa`,
+  `!!! XML`) resolved per format.
+- **Formats** — `Options.Format` selects `html5` (default), `xhtml` (self-closing
+  `<br />`, `checked="checked"`, XML prolog) or `html4`.
+- **Void / self-closing** — the HTML5 void set (`br`, `img`, `input`, `keygen`,
+  `menuitem`, …) and the explicit `%tag/` marker.
 
 CGO-free, dependency-free, **100% test coverage**, `gofmt` + `go vet` clean, and
 green across the six 64-bit Go targets (amd64, arm64, riscv64, loong64, ppc64le,
@@ -61,10 +69,19 @@ s390x).
 
 ### Deferred, honestly
 
-The `>`/`<` whitespace-removal markers parse without error but their
-surrounding-whitespace trimming is not yet applied to the emitted output (the
-element structure still compiles correctly). Everything else in the feature list
-above matches the gem's rendered HTML byte-for-byte in the test corpus.
+- **`:markdown`, `:textile`, `:sass`/`:scss`, `:less`, `:coffee` filters** need
+  an external rendering engine (a Markdown/Textile/Sass/… library) and so cannot
+  be a pure, dependency-free compile-time transform. The host can register them;
+  this library does not ship them. `:cdata` (whose exact re-indentation is
+  format-specific) is likewise left to the host. An unrecognised filter compiles
+  to its raw body.
+- **`~` / `find_and_preserve`** is compiled as an HTML-escaped `=`. In Haml 7
+  escaping runs before preservation, so an escaped `~` can never contain a
+  literal `<pre>`/`<textarea>` to preserve — the two are byte-identical, which
+  the oracle confirms. Unescaped preservation (`!~`) is not implemented.
+
+Everything else in the feature list above matches the gem's rendered HTML
+byte-for-byte across the html5/xhtml/html4 differential corpus.
 
 ## Install
 
@@ -121,6 +138,7 @@ out, err := haml.Render("%p= greeting",
 type Options struct {
 	BufVar   string // output-buffer var name; default "_hamlout"
 	EscapeFn string // Ruby escape helper for "="; default "::Haml::Util.escape_html"
+	Format   string // "html5" (default), "xhtml" or "html4"
 }
 
 // Compile returns the Ruby source that, when eval'd with the template's locals
@@ -144,8 +162,12 @@ The compiled source references two runtime symbols the host supplies:
 
 - `::Haml::Util.escape_html(s)` — the five-character HTML escape (overridable via
   `Options.EscapeFn`);
-- `::Haml::HamlAttributes.render(hash)` — renders a **dynamic** attribute hash
-  (class/id merge, `data:` expansion, boolean handling, alphabetical order).
+- `::Haml::HamlAttributes.render(format, *hashes)` — renders one or more
+  **dynamic** attribute hashes, accumulating class (space) and id (`_`) merges
+  across them, expanding `data:`, handling booleans per format and sorting
+  alphabetically;
+- `::Haml::ObjectRef.parse([obj, prefix])` — derives the class/id of an
+  `%tag[obj]` object reference.
 
 The reference implementations used by the differential oracle live in
 [`testdata/prelude.rb`](testdata/prelude.rb).

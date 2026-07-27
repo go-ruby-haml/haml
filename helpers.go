@@ -6,8 +6,9 @@ import "strings"
 // carry no content, so Haml renders them as "<tag>".
 var voidTags = map[string]bool{
 	"area": true, "base": true, "br": true, "col": true, "embed": true,
-	"hr": true, "img": true, "input": true, "link": true, "meta": true,
-	"param": true, "source": true, "track": true, "wbr": true,
+	"hr": true, "img": true, "input": true, "keygen": true, "link": true,
+	"menuitem": true, "meta": true, "param": true, "source": true,
+	"track": true, "wbr": true,
 }
 
 // isVoidTag reports whether tag is an HTML5 void element.
@@ -105,46 +106,3 @@ func endsWithDo(s string) bool {
 // rubyStrLit renders s as a Ruby double-quoted string literal (used when
 // splicing static shorthand into a dynamic attribute hash).
 func rubyStrLit(s string) string { return rubyDump(s) }
-
-// rubyInterp renders literal text containing "#{}" interpolation as a Ruby
-// double-quoted string. Interpolation sequences are preserved verbatim so the
-// eval seam evaluates them; the surrounding literal bytes are escaped the way a
-// double-quoted Ruby literal requires (", \ and interpolation-triggering '#').
-func rubyInterp(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	i := 0
-	for i < len(s) {
-		if s[i] == '#' && i+1 < len(s) && s[i+1] == '{' {
-			// Copy the whole "#{ ... }" interpolation verbatim (balanced braces).
-			depth := 0
-			j := i
-			for j < len(s) {
-				if s[j] == '{' {
-					depth++
-				} else if s[j] == '}' {
-					depth--
-					if depth == 0 {
-						j++
-						break
-					}
-				}
-				j++
-			}
-			b.WriteString(s[i:j])
-			i = j
-			continue
-		}
-		switch s[i] {
-		case '"':
-			b.WriteString("\\\"")
-		case '\\':
-			b.WriteString("\\\\")
-		default:
-			b.WriteByte(s[i])
-		}
-		i++
-	}
-	b.WriteByte('"')
-	return b.String()
-}

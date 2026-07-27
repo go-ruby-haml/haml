@@ -35,22 +35,31 @@ func parseElement(content string) (*node, int, error) {
 		}
 	}
 
-	// Attribute hashes: {} (Ruby-style) and () (HTML-style), possibly repeated.
-	for i < len(content) && (content[i] == '{' || content[i] == '(') {
+	// Attribute hashes: {} (Ruby-style), () (HTML-style) and [] (object
+	// reference), possibly repeated and interleaved.
+	for i < len(content) && (content[i] == '{' || content[i] == '(' || content[i] == '[') {
 		open := content[i]
 		close := byte('}')
-		if open == '(' {
+		switch open {
+		case '(':
 			close = ')'
+		case '[':
+			close = ']'
 		}
 		body, next, ok := scanBalanced(content, i, open, close)
 		if !ok {
 			// Unterminated attribute list — the gem raises Haml::SyntaxError.
 			return nil, 0, &SyntaxError{Line: content, Msg: "unterminated attribute list"}
 		}
-		if open == '{' {
+		switch open {
+		case '{':
 			parseRubyHashAttrs(n, body)
-		} else {
+		case '(':
 			parseHTMLAttrs(n, body)
+		case '[':
+			// Object reference: the whole element becomes dynamic, its id/class
+			// derived from the object at eval time via Haml::ObjectRef.parse.
+			n.objectRef = strings.TrimSpace(body)
 		}
 		i = next
 	}
@@ -89,6 +98,15 @@ func parseElement(content string) (*node, int, error) {
 			n.codeExpr = strings.TrimSpace(rest[1:])
 			n.textKind = textEscaped
 			n.text = "\x00expr"
+		case isPlainMarker(rest) && rest[0] == '!':
+			// Inline "! text": plain text, interpolation not escaped.
+			n.text = strings.TrimSpace(rest[1:])
+			n.textKind = textPlain
+			n.noEscape = true
+		case isPlainMarker(rest) && rest[0] == '&':
+			// Inline "& text": plain text, interpolation escaped (the default).
+			n.text = strings.TrimSpace(rest[1:])
+			n.textKind = textPlain
 		default:
 			// Inline element text is right-stripped by Haml (leading whitespace
 			// was already removed above); root-level plain text keeps its spaces.

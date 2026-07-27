@@ -200,3 +200,22 @@ func TestParseFilterReindent(t *testing.T) {
 	compileGolden(t, ":plain\n    deep\n  less",
 		head+`_hamlout << "deep\nless\n"`+"\n"+tail)
 }
+
+// TestObjectRefLiteralAttrs covers folding a fully-literal attribute hash (id,
+// boolean false and nil values) into an object-reference element's leading hash
+// — the includeLiteral "id" branch and staticAttrRubyValue's bool/nil cases.
+func TestObjectRefLiteralAttrs(t *testing.T) {
+	compileGolden(t, "%li[x]{id: 'z'}",
+		head+`_hamlout << "<li"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {id: "z"}, ::Haml::ObjectRef.parse([x]))`+"\n"+`_hamlout << "></li>\n"`+"\n"+tail)
+	compileGolden(t, "%input[x]{checked: false}",
+		head+`_hamlout << "<input"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {"checked" => false}, ::Haml::ObjectRef.parse([x]))`+"\n"+`_hamlout << ">\n"`+"\n"+tail)
+	compileGolden(t, "%input[x]{disabled: nil}",
+		head+`_hamlout << "<input"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {"disabled" => nil}, ::Haml::ObjectRef.parse([x]))`+"\n"+`_hamlout << ">\n"`+"\n"+tail)
+}
+
+// TestDoctypeVersionAndType covers a doctype line carrying both a version and a
+// named type (the whitespace-skip between them in parseDoctypeSpec).
+func TestDoctypeVersionAndType(t *testing.T) {
+	compileGolden(t, "!!! 5 Strict",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\n"`+"\n"+tail)
+}

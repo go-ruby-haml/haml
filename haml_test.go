@@ -64,8 +64,32 @@ func TestCompileExpr(t *testing.T) {
 		head+`_hamlout << "<p>"`+"\n"+`_hamlout << ::Haml::Util.escape_html((x).to_s)`+"\n"+`_hamlout << "</p>\n"`+"\n"+tail)
 	compileGolden(t, "~ x",
 		head+`_hamlout << ::Haml::Util.escape_html((x).to_s); _hamlout << "\n"`+"\n"+tail)
-	compileGolden(t, "! raw",
+	compileGolden(t, "!= raw",
 		head+`_hamlout << (raw).to_s; _hamlout << "\n"`+"\n"+tail)
+	compileGolden(t, "&= x",
+		head+`_hamlout << ::Haml::Util.escape_html((x).to_s); _hamlout << "\n"`+"\n"+tail)
+}
+
+// TestCompilePlainTextMarkers covers the "&"/"!" plain-text escape markers, the
+// default-escaped interpolation, and the literal fall-through for "&x"/bare "&".
+func TestCompilePlainTextMarkers(t *testing.T) {
+	// "! text" — plain text, interpolation NOT escaped.
+	compileGolden(t, "! raw", head+`_hamlout << "raw\n"`+"\n"+tail)
+	compileGolden(t, "! #{name}",
+		head+`_hamlout << (name).to_s`+"\n"+`_hamlout << "\n"`+"\n"+tail)
+	// "& text" — plain text, interpolation escaped (the default).
+	compileGolden(t, "& #{name}",
+		head+`_hamlout << ::Haml::Util.escape_html((name).to_s)`+"\n"+`_hamlout << "\n"`+"\n"+tail)
+	// "&x"/"!x" and a bare "&" are literal text, not markers.
+	compileGolden(t, "&x", head+`_hamlout << "&x\n"`+"\n"+tail)
+	compileGolden(t, "!x", head+`_hamlout << "!x\n"`+"\n"+tail)
+	compileGolden(t, "&", head+`_hamlout << "&\n"`+"\n"+tail)
+	compileGolden(t, "!", head+`_hamlout << "!\n"`+"\n"+tail)
+	// Inline "&"/"!" markers on an element.
+	compileGolden(t, "%p& #{name}",
+		head+`_hamlout << "<p>"`+"\n"+`_hamlout << ::Haml::Util.escape_html((name).to_s)`+"\n"+`_hamlout << "</p>\n"`+"\n"+tail)
+	compileGolden(t, "%p! #{name}",
+		head+`_hamlout << "<p>"`+"\n"+`_hamlout << (name).to_s`+"\n"+`_hamlout << "</p>\n"`+"\n"+tail)
 }
 
 func TestCompileControl(t *testing.T) {
@@ -97,8 +121,38 @@ func TestCompileComments(t *testing.T) {
 }
 
 func TestCompileDoctype(t *testing.T) {
+	// html5 (default): every version collapses to <!DOCTYPE html>; named types
+	// resolve against the HTML 4.01 table; XML emits nothing at all.
 	compileGolden(t, "!!!", head+`_hamlout << "<!DOCTYPE html>\n"`+"\n"+tail)
 	compileGolden(t, "!!! 5", head+`_hamlout << "<!DOCTYPE html>\n"`+"\n"+tail)
+	compileGolden(t, "!!! 1.1", head+`_hamlout << "<!DOCTYPE html>\n"`+"\n"+tail)
+	compileGolden(t, "!!! Strict",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\n"`+"\n"+tail)
+	compileGolden(t, "!!! Frameset",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Frameset//EN\" \"http://www.w3.org/TR/html4/frameset.dtd\">\n"`+"\n"+tail)
+	compileGolden(t, "!!! RDFa",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML+RDFa 1.0//EN\" \"http://www.w3.org/MarkUp/DTD/xhtml-rdfa-1.dtd\">\n"`+"\n"+tail)
+	// "!!! XML" in an html format emits nothing (not even a newline); an unknown
+	// doctype name (invalid in the html table) is likewise dropped.
+	compileGolden(t, "!!! XML", head+tail)
+	compileGolden(t, "!!! Basic", head+tail)
+
+	// xhtml: version-sensitive table, self-closing XML prolog, transitional
+	// default.
+	compileGolden2(t, "!!!", "xhtml",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"`+"\n"+tail)
+	compileGolden2(t, "!!! 1.1", "xhtml",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">\n"`+"\n"+tail)
+	compileGolden2(t, "!!! XML", "xhtml",
+		head+`_hamlout << "<?xml version='1.0' encoding='utf-8' ?>\n"`+"\n"+tail)
+	compileGolden2(t, "!!! Mobile", "xhtml",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//WAPFORUM//DTD XHTML Mobile 1.2//EN\" \"http://www.openmobilealliance.org/tech/DTD/xhtml-mobile12.dtd\">\n"`+"\n"+tail)
+
+	// html4: always the transitional doctype.
+	compileGolden2(t, "!!!", "html4",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\" \"http://www.w3.org/TR/html4/loose.dtd\">\n"`+"\n"+tail)
+	compileGolden2(t, "!!! Strict", "html4",
+		head+`_hamlout << "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\n"`+"\n"+tail)
 }
 
 func TestCompileFilters(t *testing.T) {
@@ -109,7 +163,7 @@ func TestCompileFilters(t *testing.T) {
 	compileGolden(t, ":css\n  .a { c: red; }",
 		head+`_hamlout << "<style>\n  .a { c: red; }\n</style>\n"`+"\n"+tail)
 	compileGolden(t, ":preserve\n  a\n  b",
-		head+`_hamlout << "a&#x000A;b\n"`+"\n"+tail)
+		head+`_hamlout << "a&#x000A;b&#x000A;\n"`+"\n"+tail)
 	compileGolden(t, ":ruby\n  x = 1\n  y = 2", head+"x = 1\ny = 2\n"+tail)
 	compileGolden(t, ":unknownfilter\n  body", head+`_hamlout << "body\n"`+"\n"+tail)
 	// Filter body followed by a dedented sibling.
@@ -148,31 +202,83 @@ func TestCompileStaticAttrs(t *testing.T) {
 
 func TestCompileDynamicAttrs(t *testing.T) {
 	compileGolden(t, "%p{id: who}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({id: who})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
-	// Dynamic hash with static shorthand class merged in.
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {id: who})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+	// Dynamic hash with static shorthand class as a separate leading hash so the
+	// runtime helper accumulates class across hashes.
 	compileGolden(t, "%p.c{id: who}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({class: "c", id: who})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {class: "c"}, {id: who})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 	compileGolden(t, "%p#i{class: cls}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({id: "i", class: cls})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {id: "i"}, {class: cls})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 	// Interpolated double-quoted attr value forces dynamic.
 	compileGolden(t, `%p{title: "x#{y}"}`,
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({title: "x#{y}"})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {title: "x#{y}"})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 	// data hash with a dynamic value forces dynamic.
 	compileGolden(t, "%p{data: {x: v}}",
-		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({data: {x: v}})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {data: {x: v}})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
 	// HTML-style dynamic value forces dynamic.
 	compileGolden(t, "%a(href=url)",
-		head+`_hamlout << "<a"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render({href=url})`+"\n"+`_hamlout << "></a>\n"`+"\n"+tail)
+		head+`_hamlout << "<a"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {href=url})`+"\n"+`_hamlout << "></a>\n"`+"\n"+tail)
+}
+
+// TestCompileObjectRef covers the "[obj]" object-reference syntax, which always
+// compiles to a dynamic Haml::ObjectRef.parse hash, optionally merged with a
+// leading static/dynamic attribute hash.
+func TestCompileObjectRef(t *testing.T) {
+	compileGolden(t, "%li[x]",
+		head+`_hamlout << "<li"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", ::Haml::ObjectRef.parse([x]))`+"\n"+`_hamlout << "></li>\n"`+"\n"+tail)
+	compileGolden(t, "%div[x, :pre]",
+		head+`_hamlout << "<div"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", ::Haml::ObjectRef.parse([x, :pre]))`+"\n"+`_hamlout << "></div>\n"`+"\n"+tail)
+	// A fully-literal attribute hash is folded in as a leading hash before the
+	// object reference so its class merges ahead of the object-ref class.
+	compileGolden(t, "%li[x]{class: 'extra'}",
+		head+`_hamlout << "<li"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {class: "extra"}, ::Haml::ObjectRef.parse([x]))`+"\n"+`_hamlout << "></li>\n"`+"\n"+tail)
+	// A literal non-class/id attribute folds in via the string-hashrocket form.
+	compileGolden(t, "%input[x]{type: 'text', checked: true}",
+		head+`_hamlout << "<input"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("html5", {"type" => "text", "checked" => true}, ::Haml::ObjectRef.parse([x]))`+"\n"+`_hamlout << ">\n"`+"\n"+tail)
+}
+
+// TestCompileFormat covers the :xhtml and :html4 formats: self-closing void
+// tags, boolean-attribute expansion, and the format passed to the dynamic
+// attribute helper. An invalid format is rejected.
+func TestCompileFormat(t *testing.T) {
+	compileGolden2(t, "%img{src: 'x'}", "xhtml", head+`_hamlout << "<img src=\"x\" />\n"`+"\n"+tail)
+	compileGolden2(t, "%br", "xhtml", head+`_hamlout << "<br />\n"`+"\n"+tail)
+	compileGolden2(t, "%hr/", "xhtml", head+`_hamlout << "<hr />\n"`+"\n"+tail)
+	compileGolden2(t, "%input{checked: true}", "xhtml", head+`_hamlout << "<input checked=\"checked\" />\n"`+"\n"+tail)
+	compileGolden2(t, "%p{id: w}", "xhtml",
+		head+`_hamlout << "<p"`+"\n"+`_hamlout << ::Haml::HamlAttributes.render("xhtml", {id: w})`+"\n"+`_hamlout << "></p>\n"`+"\n"+tail)
+	// html4 keeps html-style bare void tags but a transitional doctype.
+	compileGolden2(t, "%br", "html4", head+`_hamlout << "<br>\n"`+"\n"+tail)
+	if _, err := Compile("%p", Options{Format: "bogus"}); err == nil {
+		t.Fatal("invalid format should error")
+	}
+}
+
+// compileGolden2 is compileGolden with an explicit format.
+func compileGolden2(t *testing.T, tpl, format, want string) {
+	t.Helper()
+	got, err := Compile(tpl, Options{Format: format})
+	if err != nil {
+		t.Fatalf("Compile(%q, %q): %v", tpl, format, err)
+	}
+	if got != want {
+		t.Errorf("Compile(%q, %q)\n got=%q\nwant=%q", tpl, format, got, want)
+	}
 }
 
 func TestCompileInterpolation(t *testing.T) {
+	// Interpolation is HTML-escaped by default (the gem's behaviour): each "#{}"
+	// becomes an escaped append, literal runs stay coalesced static.
 	compileGolden(t, "%p Hello #{name}",
-		head+`_hamlout << "<p>"`+"\n"+`_hamlout << "Hello #{name}"`+"\n"+`_hamlout << "</p>\n"`+"\n"+tail)
+		head+`_hamlout << "<p>Hello "`+"\n"+`_hamlout << ::Haml::Util.escape_html((name).to_s)`+"\n"+`_hamlout << "</p>\n"`+"\n"+tail)
 	compileGolden(t, "plain #{x} txt",
-		head+`_hamlout << "plain #{x} txt"; _hamlout << "\n"`+"\n"+tail)
-	// Escaping of " and \ around interpolation.
+		head+`_hamlout << "plain "`+"\n"+`_hamlout << ::Haml::Util.escape_html((x).to_s)`+"\n"+`_hamlout << " txt\n"`+"\n"+tail)
+	// Literal quotes/backslashes around interpolation stay literal (static run).
 	compileGolden(t, `say "#{q}" \x`,
-		head+`_hamlout << "say \"#{q}\" \\x"; _hamlout << "\n"`+"\n"+tail)
+		head+`_hamlout << "say \""`+"\n"+`_hamlout << ::Haml::Util.escape_html((q).to_s)`+"\n"+`_hamlout << "\" \\x\n"`+"\n"+tail)
+	// An unterminated interpolation copies the remaining text as the expression.
+	compileGolden(t, "a #{b",
+		head+`_hamlout << "a "`+"\n"+`_hamlout << ::Haml::Util.escape_html((b).to_s)`+"\n"+`_hamlout << "\n"`+"\n"+tail)
 }
 
 func TestCompileMultiline(t *testing.T) {
@@ -183,17 +289,28 @@ func TestCompileMultiline(t *testing.T) {
 }
 
 func TestCompileWhitespaceMarkers(t *testing.T) {
-	// ">" / "<" markers parse without error (whitespace-removal semantics are
-	// documented as deferred; structure still compiles).
-	if _, err := Compile("%p>\n  x", Options{}); err != nil {
-		t.Fatalf("nuke-outer: %v", err)
-	}
-	if _, err := Compile("%p<\n  x", Options{}); err != nil {
-		t.Fatalf("nuke-inner: %v", err)
-	}
-	if _, err := Compile("%p<>\n  x", Options{}); err != nil {
-		t.Fatalf("nuke-both: %v", err)
-	}
+	// ">" (remove outer whitespace): strips the whitespace preceding the tag and
+	// suppresses the newline after its close. Between two static siblings the
+	// preceding newline is trimmed from the coalesced static run.
+	compileGolden(t, "%li a\n%li> b",
+		head+`_hamlout << "<li>a</li><li>b</li>"`+"\n"+tail)
+	// The nuke-outer rstrip on a fresh buffer (nothing precedes) still emits the
+	// runtime rstrip! and suppresses the trailing newline.
+	compileGolden(t, "%p>\n  a\n  b",
+		head+"_hamlout.rstrip!\n"+`_hamlout << "<p>\na\nb\n</p>"`+"\n"+tail)
+	// "<" (remove inner whitespace): no newline after the open tag; the trailing
+	// whitespace before the close tag is trimmed.
+	compileGolden(t, "%p<\n  a\n  b",
+		head+`_hamlout << "<p>a\nb</p>\n"`+"\n"+tail)
+	// A dynamic sibling before a nuke-outer element takes the runtime-rstrip path.
+	compileGolden(t, `= "x"`+"\n%p> y",
+		head+`_hamlout << ::Haml::Util.escape_html(("x").to_s); _hamlout << "\n"`+"\n"+
+			"_hamlout.rstrip!\n"+`_hamlout << "<p>y</p>"`+"\n"+tail)
+	// Nuke-outer on a void tag suppresses its trailing newline (the leading
+	// rstrip! is a runtime no-op on the still-empty buffer).
+	compileGolden(t, "%img>\n%img", head+"_hamlout.rstrip!\n"+`_hamlout << "<img><img>\n"`+"\n"+tail)
+	// Nuke-inner on an element with inline content is a no-op (already inline).
+	compileGolden(t, "%p< x", head+`_hamlout << "<p>x</p>\n"`+"\n"+tail)
 }
 
 func TestOptions(t *testing.T) {

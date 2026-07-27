@@ -17,6 +17,7 @@ type node struct {
 	tag        string
 	staticAttr []staticAttr // .class/#id shorthand + literal {}/() attributes
 	dynAttrRB  string       // Ruby hash source for non-literal {}/() attributes, or ""
+	objectRef  string       // "[obj, prefix]" object-reference Ruby source, or ""
 	selfClose  bool         // explicit "/" self-close marker
 	nuke       nukeMode     // ">"/"<" whitespace removal
 
@@ -27,6 +28,11 @@ type node struct {
 	textKind textKind
 	codeExpr string
 	control  string
+
+	// noEscape marks a plain-text node whose "#{}" interpolation must NOT be
+	// HTML-escaped (the "!" line prefix / inline marker). Plain-text
+	// interpolation is HTML-escaped by default, matching the gem.
+	noEscape bool
 
 	// Filter fields (kindFilter).
 	filterName string
@@ -213,10 +219,22 @@ func parseLine(content string, indent int, lines []string, idx int) (n *node, co
 		if strings.HasPrefix(content, "!=") {
 			return parseExprLine(content, true)
 		}
-		if strings.HasPrefix(content, "!") {
-			// "! expr" unescaped output.
-			return parseExprLine(content, true)
+		if isPlainMarker(content) {
+			// "! text" is plain text whose interpolation is NOT escaped.
+			return &node{kind: kindText, text: strings.TrimSpace(content[1:]), textKind: textPlain, noEscape: true}, 1, nil
 		}
+		// A bare "!" or "!x" is literal text.
+		return &node{kind: kindText, text: content, textKind: textPlain}, 1, nil
+	case '&':
+		if strings.HasPrefix(content, "&=") {
+			return parseExprLine("="+content[2:], false)
+		}
+		if isPlainMarker(content) {
+			// "& text" is plain text whose interpolation IS escaped — the default.
+			return &node{kind: kindText, text: strings.TrimSpace(content[1:]), textKind: textPlain}, 1, nil
+		}
+		// A bare "&" or "&x" is literal text.
+		return &node{kind: kindText, text: content, textKind: textPlain}, 1, nil
 	case '-':
 		if strings.HasPrefix(content, "-#") {
 			return &node{kind: kindSilent}, 1, nil
@@ -242,18 +260,30 @@ func parseLine(content string, indent int, lines []string, idx int) (n *node, co
 	return &node{kind: kindText, text: content, textKind: textPlain}, 1, nil
 }
 
+// isPlainMarker reports whether a line beginning with "&" or "!" is the
+// escape/unescape plain-text marker rather than literal text. The gem treats the
+// character as a marker only when it is followed by whitespace or the start of
+// an interpolation ("#{"); "&x", "&." and a bare "&" are literal text.
+func isPlainMarker(content string) bool {
+	if len(content) < 2 {
+		return false
+	}
+	if content[1] == ' ' || content[1] == '\t' {
+		return true
+	}
+	return strings.HasPrefix(content[1:], "#{")
+}
+
 // parseExprLine parses a "= expr" (or "!= expr") output line.
 func parseExprLine(content string, unescaped bool) (*node, int, error) {
-	// content starts with "=" or "!=".
+	// content starts with "=" or "!=" (the "~"/"&=" line prefixes are rewritten
+	// to "=" before reaching here).
 	rest := content
 	if strings.HasPrefix(rest, "!=") {
 		rest = rest[2:]
 		unescaped = true
 	} else if strings.HasPrefix(rest, "=") {
 		rest = rest[1:]
-	} else if strings.HasPrefix(rest, "!") {
-		rest = rest[1:]
-		unescaped = true
 	}
 	expr := strings.TrimSpace(rest)
 	tk := textEscaped
